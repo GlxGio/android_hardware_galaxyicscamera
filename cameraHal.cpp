@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2012, Raviprasad V Mummidi.
- * Copyright (C) 2012, GalaxyICS project
+ * Copyright (C) 2012, GalaxyICS project.
+ * Copyright (C) 2012, Marcin Chojnacki.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,6 +94,42 @@ android::CameraParameters camSettings;
 preview_stream_ops_t      *mWindow = NULL;
 android::sp<android::CameraHardwareInterface> qCamera;
 
+/* GalaxyICS changes by Marcin Chojnacki */
+void *libcameraHandle=NULL;
+bool loadAdaptor() {
+   if(libcameraHandle==NULL) {
+      libcameraHandle=::dlopen("libseccameraadaptor.so",RTLD_NOW);	//load adaptor - libcameraHandle is no more NULL
+	   LOGD("loading libseccameraadaptor at %p",libcameraHandle);
+	   if(!libcameraHandle) {
+		  LOGE("FATAL ERROR: could not dlopen libseccameraadaptor.so: %s",dlerror());
+		  return false;
+	   }
+
+	   /*** openCameraHardware ***/
+	   if(::dlsym(libcameraHandle,"SEC_openCameraHardware")!=NULL) *(void**)&LINK_openCameraHardware=::dlsym(libcameraHandle,"SEC_openCameraHardware");
+	   else {
+		  LOGE("FATAL ERROR: Could not find SEC_openCameraHardware");
+		  return false;
+	   }
+	   
+	   /*** getNumberOfCameras ***/
+	   if(::dlsym(libcameraHandle,"SEC_getNumberOfCameras")!=NULL) *(void**)&LINK_getNumberofCameras=::dlsym(libcameraHandle,"SEC_getNumberOfCameras");
+	   else {
+		  LOGE("FATAL ERROR: Could not find SEC_getNumberOfCameras");
+		  return false;
+	   }  
+
+	   /*** getCameraInfo ***/
+	   if(::dlsym(libcameraHandle,"SEC_getCameraInfo")!=NULL) *(void**)&LINK_getCameraInfo=::dlsym(libcameraHandle,"SEC_getCameraInfo");
+	   else {
+		  LOGE("FATAL ERROR: Could not find SEC_getNumberOfCameras");
+		  return false;
+	   }
+   }
+   
+   return true;	//if everything is good
+}
+
 static hw_module_methods_t camera_module_methods = {
    open: qcamera_device_open
 };
@@ -113,7 +150,7 @@ camera_module_t HAL_MODULE_INFO_SYM = {
    get_camera_info: CameraHAL_GetCam_Info,
 };
 
-/* HAL helper functions. */
+/* HAL helper functions */
 void
 CameraHAL_NotifyCb(int32_t msg_type, int32_t ext1,
                    int32_t ext2, void *user)
@@ -399,21 +436,11 @@ CameraHAL_DataTSCb(nsecs_t timestamp, int32_t msg_type,
 int
 CameraHAL_GetNum_Cameras(void)
 {
-   int numCameras = 1;
-
+   int numCameras=1;
    LOGE("CameraHAL_GetNum_Cameras:\n");
-   void *libcameraHandle = ::dlopen("libseccameraadaptor.so", RTLD_NOW);
-   LOGD("CameraHAL_GetNum_Cameras: loading libseccameraadaptor at %p", libcameraHandle);
-   if (!libcameraHandle) {
-       LOGE("FATAL ERROR: could not dlopen libseccameraadaptor.so: %s", dlerror());
-   } else {
-      if (::dlsym(libcameraHandle, "SEC_getNumberOfCameras") != NULL) {
-         *(void**)&LINK_getNumberofCameras =
-                  ::dlsym(libcameraHandle, "SEC_getNumberOfCameras");
-         numCameras = LINK_getNumberofCameras();
-         LOGD("CameraHAL_GetNum_Cameras: numCameras:%d", numCameras);
-      }
-      dlclose(libcameraHandle);
+   if(loadAdaptor()) {
+      numCameras=LINK_getNumberofCameras();
+      LOGD("CameraHAL_GetNum_Cameras: numCameras:%d",numCameras);
    }
    return numCameras;
 }
@@ -421,25 +448,16 @@ CameraHAL_GetNum_Cameras(void)
 int
 CameraHAL_GetCam_Info(int camera_id, struct camera_info *info)
 {
-   bool dynamic = false;
+   bool dynamic=false;
    LOGV("CameraHAL_GetCam_Info:\n");
-   void *libcameraHandle = ::dlopen("libseccameraadaptor.so", RTLD_NOW);
-   LOGD("CameraHAL_GetNum_Cameras: loading libseccameraadaptor at %p", libcameraHandle);
-   if (!libcameraHandle) {
-       LOGE("FATAL ERROR: could not dlopen libseccameraadaptor.so: %s", dlerror());
-       return EINVAL;
-   } else {
-      if (::dlsym(libcameraHandle, "SEC_getCameraInfo") != NULL) {
-         *(void**)&LINK_getCameraInfo =
-                  ::dlsym(libcameraHandle, "SEC_getCameraInfo");
-         LINK_getCameraInfo(camera_id, info);
-         dynamic = true;
-      }
-      dlclose(libcameraHandle);
+   if(loadAdaptor()) {
+      LINK_getCameraInfo(camera_id,info);
+      dynamic = true;
    }
-   if (!dynamic) {
-      info->facing      = CAMERA_FACING_BACK;
-      info->orientation = 90;
+   else return EINVAL;
+   if(!dynamic) {
+      info->facing=CAMERA_FACING_BACK;
+      info->orientation=90;
    }
    return NO_ERROR;
 }
@@ -766,31 +784,10 @@ int
 qcamera_device_open(const hw_module_t* module, const char* name,
                    hw_device_t** device)
 {
-
-   void *libcameraHandle;
-   int cameraId = atoi(name);
-
-   LOGD("qcamera_device_open: name:%s device:%p cameraId:%d\n",
-        name, device, cameraId);
-
-   libcameraHandle = ::dlopen("libseccameraadaptor.so", RTLD_NOW);
-   LOGD("loading libseccameraadaptor at %p", libcameraHandle);
-   if (!libcameraHandle) {
-       LOGE("FATAL ERROR: could not dlopen libseccameraadaptor.so: %s", dlerror());
-       return false;
-   }
-
-   if (::dlsym(libcameraHandle, "SEC_openCameraHardware") != NULL) {
-      *(void**)&LINK_openCameraHardware =
-               ::dlsym(libcameraHandle, "SEC_openCameraHardware");
-   } else {
-      LOGE("FATAL ERROR: Could not find SEC_openCameraHardware");
-      dlclose(libcameraHandle);
-      return false;
-   }
-
-   qCamera = LINK_openCameraHardware(cameraId);
-   ::dlclose(libcameraHandle);
+   int cameraId=atoi(name);
+   LOGD("qcamera_device_open: name:%s device:%p cameraId:%d\n",name,device,cameraId);
+   if(!loadAdaptor()) return false;
+   qCamera=LINK_openCameraHardware(cameraId);
 
    camera_device_t* camera_device = NULL;
    camera_device_ops_t* camera_ops = NULL;
@@ -834,4 +831,3 @@ qcamera_device_open(const hw_module_t* module, const char* name,
    *device = &camera_device->common;
    return NO_ERROR;
 }
-
